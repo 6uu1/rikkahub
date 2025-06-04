@@ -51,6 +51,33 @@ class WebDavViewModel @Inject constructor(
 
     // TODO: Add LiveData/StateFlow for lastBackupTime and load it from preferences
 
+    fun testWebDavConnection(serverUrl: String, username: String, password: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _testConnectionStatus.value = TestConnectionStatus.Testing
+            Log.d("WebDavViewModel", "Testing WebDAV connection. Server: $serverUrl, User: $username")
+            try {
+                // Ensure serverUrl is not empty as WebDavUtils might not handle it
+                if (serverUrl.isBlank() || username.isBlank()) { // Also check for blank username as it's often required
+                    _testConnectionStatus.value = TestConnectionStatus.Error("Server URL and Username cannot be empty.")
+                    Log.w("WebDavViewModel", "Server URL or Username is blank.")
+                    return@launch
+                }
+                val webDavUtils = WebDavUtils(serverUrl, username, password)
+                if (webDavUtils.testConnection()) { // testConnection in WebDavUtils should return Boolean
+                    _testConnectionStatus.value = TestConnectionStatus.Success("Connection successful!")
+                    Log.i("WebDavViewModel", "WebDAV connection test successful for $serverUrl.")
+                } else {
+                    // This path assumes testConnection() returns false for non-exception failures
+                    _testConnectionStatus.value = TestConnectionStatus.Error("Connection test failed. Check URL, credentials, and server permissions. Server was reachable but operation failed.")
+                    Log.w("WebDavViewModel", "WebDAV connection test reported failure (returned false) for $serverUrl.")
+                }
+            } catch (e: Exception) {
+                _testConnectionStatus.value = TestConnectionStatus.Error("Connection test failed: ${e.localizedMessage ?: e.message ?: "Unknown error"}")
+                Log.e("WebDavViewModel", "WebDAV connection test error for $serverUrl", e)
+            }
+        }
+    }
+
     private fun getDatabasePath(): String {
         return application.getDatabasePath(DATABASE_NAME).absolutePath
     }
@@ -138,9 +165,6 @@ class WebDavViewModel @Inject constructor(
         val relative = if (relativePath.startsWith("/")) relativePath.substring(1) else relativePath
         return base + relative
     }
-
-    // TODO: Implement restoreData function
-    // TODO: Implement testConnection function (maybe call from UI and update status here)
 
     fun restoreData(serverUrl: String, username: String, password: String, remoteDirName: String = "RikkaHubBackup") {
         viewModelScope.launch(Dispatchers.IO) {

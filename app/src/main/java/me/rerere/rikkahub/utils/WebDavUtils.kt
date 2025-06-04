@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.utils
 
+import android.util.Log
 import com.thegrizzlylabs.sardineandroid.Sardine
 import com.thegrizzlylabs.sardineandroid.impl.okhttp.OkHttpSardine
 import java.io.File
@@ -12,6 +13,10 @@ class WebDavUtils(
     private val username: String,
     private val password: String
 ) {
+    companion object {
+        private const val TAG = "WebDavUtils"
+    }
+
     // Made public to allow ViewModel to call createDirectory directly for now
     // Consider adding a dedicated method in WebDavUtils for directory creation if preferred
     val sardine: Sardine = OkHttpSardine()
@@ -54,12 +59,10 @@ class WebDavUtils(
             sardine.put(fullRemoteUrl, inputStream)
             true
         } catch (e: IOException) {
-            // Log error (e.g., network issue, file access issue)
-            e.printStackTrace() // Replace with proper logging
+            Log.e(TAG, "Error uploading file. Local: $localPath, Remote URL: $fullRemoteUrl", e)
             false
         } catch (e: Exception) {
-            // Log other errors (e.g., SardineException for WebDAV specific errors)
-            e.printStackTrace() // Replace with proper logging
+            Log.e(TAG, "Unexpected error uploading file. Local: $localPath, Remote URL: $fullRemoteUrl", e)
             false
         }
     }
@@ -85,12 +88,10 @@ class WebDavUtils(
             }
             true
         } catch (e: IOException) {
-            // Log error
-            e.printStackTrace() // Replace with proper logging
+            Log.e(TAG, "Error downloading file from $fullRemoteUrl to $localPath", e)
             false
         } catch (e: Exception) {
-            // Log other errors
-            e.printStackTrace() // Replace with proper logging
+            Log.e(TAG, "Unexpected error downloading file from $fullRemoteUrl to $localPath", e)
             false
         }
     }
@@ -107,8 +108,7 @@ class WebDavUtils(
             sardine.list(pathToTest) // Throws exception on failure (e.g., auth, not found)
             true
         } catch (e: Exception) {
-            // Log error (e.g., AuthenticationFailedException, FileNotFoundException, IOException)
-            e.printStackTrace() // Replace with proper logging
+            Log.e(TAG, "Error testing connection to $pathToTest", e)
             false
         }
     }
