@@ -236,6 +236,10 @@ class RouteActivity : ComponentActivity() {
                         SettingMcpPage()
                     }
 
+                    composableHelper("setting/webdav") { // Added route for WebDAV Settings
+                        me.rerere.rikkahub.ui.pages.setting.WebDavSettingsPage()
+                    }
+
                     composableHelper("debug") {
                         DebugPage()
                     }

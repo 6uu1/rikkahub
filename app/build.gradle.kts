@@ -155,6 +155,9 @@ dependencies {
     implementation(libs.retrofit)
     implementation(libs.retrofit.serialization.json)
 
+    // sardine-android (WebDAV)
+    implementation("com.github.thegrizzlylabs:sardine-android:v0.9")
+
     // coil
     implementation(libs.coil.compose)
     implementation(libs.coil.okhttp)

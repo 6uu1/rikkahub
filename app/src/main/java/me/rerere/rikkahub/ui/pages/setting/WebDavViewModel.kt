@@ -1,0 +1,348 @@
+package me.rerere.rikkahub.ui.pages.setting
+
+import android.app.Application
+import android.util.Log
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import me.rerere.rikkahub.utils.WebDavUtils
+import java.io.File
+
+// Corrected database name based on grep result
+const val DATABASE_NAME = "rikka_hub"
+const val DATASTORE_PREFERENCES_NAME = "settings" // from DataStoreModule.kt: preferencesDataStore(name = "settings")
+const val DATASTORE_FILE_NAME = "${DATASTORE_PREFERENCES_NAME}.preferences_pb"
+
+
+// Sealed interface for status, defined outside or in a common place if used by multiple ViewModels
+sealed class BackupRestoreStatus {
+    object Idle : BackupRestoreStatus()
+    data class RestoredNeedRestart(val message: String) : BackupRestoreStatus() // Added for restore
+    data class InProgress(val message: String) : BackupRestoreStatus()
+    data class Success(val message: String) : BackupRestoreStatus()
+    data class Error(val message: String) : BackupRestoreStatus()
+}
+
+sealed class TestConnectionStatus {
+    object Idle : TestConnectionStatus()
+    object Testing : TestConnectionStatus()
+    data class Success(val message: String) : TestConnectionStatus()
+    data class Error(val message: String) : TestConnectionStatus()
+}
+
+class WebDavViewModel(
+    private val application: Application,
+    private val appDatabase: me.rerere.rikkahub.data.db.AppDatabase
+    // private val settingsStore: SettingsStore // Example, not used for now
+) : ViewModel() {
+
+    private val _backupStatus = MutableStateFlow<BackupRestoreStatus>(BackupRestoreStatus.Idle)
+    val backupStatus: StateFlow<BackupRestoreStatus> = _backupStatus.asStateFlow()
+
+    private val _testConnectionStatus = MutableStateFlow<TestConnectionStatus>(TestConnectionStatus.Idle)
+    val testConnectionStatus: StateFlow<TestConnectionStatus> = _testConnectionStatus.asStateFlow()
+
+    // TODO: Add LiveData/StateFlow for lastBackupTime and load it from preferences
+
+    fun testWebDavConnection(serverUrl: String, username: String, password: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _testConnectionStatus.value = TestConnectionStatus.Testing
+            Log.d("WebDavViewModel", "Testing WebDAV connection. Server: $serverUrl, User: $username")
+            try {
+                // Ensure serverUrl is not empty as WebDavUtils might not handle it
+                if (serverUrl.isBlank() || username.isBlank()) { // Also check for blank username as it's often required
+                    _testConnectionStatus.value = TestConnectionStatus.Error("Server URL and Username cannot be empty.")
+                    Log.w("WebDavViewModel", "Server URL or Username is blank.")
+                    return@launch
+                }
+                val webDavUtils = WebDavUtils(serverUrl, username, password)
+                if (webDavUtils.testConnection()) { // testConnection in WebDavUtils should return Boolean
+                    _testConnectionStatus.value = TestConnectionStatus.Success("Connection successful!")
+                    Log.i("WebDavViewModel", "WebDAV connection test successful for $serverUrl.")
+                } else {
+                    // This path assumes testConnection() returns false for non-exception failures
+                    _testConnectionStatus.value = TestConnectionStatus.Error("Connection test failed. Check URL, credentials, and server permissions. Server was reachable but operation failed.")
+                    Log.w("WebDavViewModel", "WebDAV connection test reported failure (returned false) for $serverUrl.")
+                }
+            } catch (e: Exception) {
+                _testConnectionStatus.value = TestConnectionStatus.Error("Connection test failed: ${e.localizedMessage ?: e.message ?: "Unknown error"}")
+                Log.e("WebDavViewModel", "WebDAV connection test error for $serverUrl", e)
+            }
+        }
+    }
+
+    private fun getDatabasePath(): String {
+        return application.getDatabasePath(DATABASE_NAME).absolutePath
+    }
+
+    private fun getDataStorePath(): String {
+        // Path for DataStore preferences is typically context.filesDir + "datastore/" + PREFERENCES_NAME + ".preferences_pb"
+        return File(application.filesDir, "datastore/$DATASTORE_FILE_NAME").absolutePath
+    }
+
+    fun backupData(serverUrl: String, username: String, password: String, remoteDirName: String = "RikkaHubBackup") {
+        viewModelScope.launch(Dispatchers.IO) {
+            _backupStatus.value = BackupRestoreStatus.InProgress("Starting backup...")
+            Log.d("WebDavViewModel", "Backup started. Server: $serverUrl, User: $username, RemoteDir: $remoteDirName")
+
+            try {
+                // Perform WAL Checkpoint
+                _backupStatus.value = BackupRestoreStatus.InProgress("Performing WAL checkpoint...")
+                try {
+                    Log.i("WebDavViewModel", "Attempting WAL checkpoint...")
+                    // Query method requires API level 11, should be fine for minSdk 26
+                    // The cursor must be closed to prevent resource leaks.
+                    appDatabase.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL);", null).use { cursor ->
+                        // Optionally, you can check cursor.moveToFirst() or cursor.count if the pragma returns data,
+                        // but for wal_checkpoint, simply executing it is usually sufficient.
+                        // If it throws an exception, the catch block below will handle it.
+                    }
+                    Log.i("WebDavViewModel", "WAL checkpoint successful.")
+                } catch (e: Exception) {
+                    Log.e("WebDavViewModel", "Error performing WAL checkpoint", e)
+                    _backupStatus.value = BackupRestoreStatus.Error("Backup failed: Could not perform WAL checkpoint. ${e.message}")
+                    return@launch
+                }
+
+                val webDavUtils = WebDavUtils(serverUrl, username, password)
+
+                // Construct the full URL for the remote directory.
+                // Sardine methods operate on URLs. If serverUrl is "https://host.com/dav/",
+                // and remoteDirName is "RikkaHubBackup", then target dir is "https://host.com/dav/RikkaHubBackup/"
+                val fullRemoteDirPath = buildFullUrl(serverUrl, remoteDirName) + "/" // Ensure trailing slash for directory
+
+                _backupStatus.value = BackupRestoreStatus.InProgress("Checking/Creating remote directory: $remoteDirName")
+                Log.d("WebDavViewModel", "Attempting to create remote directory: $fullRemoteDirPath")
+                if (!webDavUtils.sardine.exists(fullRemoteDirPath)) {
+                    webDavUtils.sardine.createDirectory(fullRemoteDirPath)
+                    Log.i("WebDavViewModel", "Remote directory created: $fullRemoteDirPath")
+                } else {
+                    Log.i("WebDavViewModel", "Remote directory already exists: $fullRemoteDirPath")
+                }
+
+                // Database files
+                val dbPath = getDatabasePath()
+                val dbFile = File(dbPath)
+                val dbWalPath = "$dbPath-wal"
+                val dbShmPath = "$dbPath-shm"
+                val dbWalFile = File(dbWalPath)
+                val dbShmFile = File(dbShmPath)
+
+                Log.d("WebDavViewModel", "Main DB path: $dbPath")
+                Log.d("WebDavViewModel", "WAL DB path: $dbWalPath")
+                Log.d("WebDavViewModel", "SHM DB path: $dbShmPath")
+
+                _backupStatus.value = BackupRestoreStatus.InProgress("Backing up database files...")
+                if (dbFile.exists()) {
+                    Log.d("WebDavViewModel", "Uploading main database file: ${dbFile.name}")
+                    if (!webDavUtils.uploadFile(dbPath, "$remoteDirName/${dbFile.name}")) {
+                        _backupStatus.value = BackupRestoreStatus.Error("Failed to upload main database file.")
+                        Log.e("WebDavViewModel", "Main database upload failed: ${dbFile.name}")
+                        return@launch
+                    }
+                    Log.i("WebDavViewModel", "Main database file uploaded: ${dbFile.name}")
+                } else {
+                    _backupStatus.value = BackupRestoreStatus.Error("Main database file not found at: $dbPath")
+                    Log.e("WebDavViewModel", "Main database file not found: $dbPath")
+                    return@launch
+                }
+
+                if (dbWalFile.exists()) {
+                    Log.d("WebDavViewModel", "Uploading WAL file: ${dbWalFile.name}")
+                    if (!webDavUtils.uploadFile(dbWalPath, "$remoteDirName/${dbWalFile.name}")) {
+                        // Log error but don't necessarily fail the whole backup if WAL upload fails?
+                        // For consistency, let's treat it as a failure for now.
+                        _backupStatus.value = BackupRestoreStatus.Error("Failed to upload database WAL file.")
+                        Log.e("WebDavViewModel", "Database WAL upload failed: ${dbWalFile.name}")
+                        return@launch
+                    }
+                    Log.i("WebDavViewModel", "WAL file uploaded: ${dbWalFile.name}")
+                } else {
+                    Log.w("WebDavViewModel", "WAL file not found at $dbWalPath, skipping.")
+                }
+
+                if (dbShmFile.exists()) {
+                    Log.d("WebDavViewModel", "Uploading SHM file: ${dbShmFile.name}")
+                    if (!webDavUtils.uploadFile(dbShmPath, "$remoteDirName/${dbShmFile.name}")) {
+                        _backupStatus.value = BackupRestoreStatus.Error("Failed to upload database SHM file.")
+                        Log.e("WebDavViewModel", "Database SHM upload failed: ${dbShmFile.name}")
+                        return@launch
+                    }
+                    Log.i("WebDavViewModel", "SHM file uploaded: ${dbShmFile.name}")
+                } else {
+                    Log.w("WebDavViewModel", "SHM file not found at $dbShmPath, skipping.")
+                }
+
+                // DataStore file
+                val dataStorePath = getDataStorePath()
+                val dataStoreFile = File(dataStorePath)
+                Log.d("WebDavViewModel", "DataStore path: $dataStorePath")
+
+                if (dataStoreFile.exists()) {
+                    _backupStatus.value = BackupRestoreStatus.InProgress("Backing up settings (${dataStoreFile.name})...")
+                    Log.d("WebDavViewModel", "Uploading settings file: ${dataStoreFile.name}")
+                    if (!webDavUtils.uploadFile(dataStorePath, "$remoteDirName/${dataStoreFile.name}")) {
+                        _backupStatus.value = BackupRestoreStatus.Error("Failed to upload settings file.")
+                        Log.e("WebDavViewModel", "Settings upload failed: ${dataStoreFile.name}")
+                        return@launch
+                    }
+                    Log.i("WebDavViewModel", "Settings file uploaded: ${dataStoreFile.name}")
+                } else {
+                    _backupStatus.value = BackupRestoreStatus.Error("Settings file not found at: $dataStorePath")
+                    Log.e("WebDavViewModel", "Settings file not found: $dataStorePath")
+                    return@launch
+                }
+
+                _backupStatus.value = BackupRestoreStatus.Success("Backup completed successfully!")
+                Log.i("WebDavViewModel", "Backup completed successfully.")
+                // TODO: Update lastBackupTime here
+
+            } catch (e: Exception) {
+                _backupStatus.value = BackupRestoreStatus.Error("Backup failed: ${e.message}")
+                Log.e("WebDavViewModel", "Backup error", e)
+            }
+        }
+    }
+
+    private fun buildFullUrl(serverBaseUrl: String, relativePath: String): String {
+        val base = if (serverBaseUrl.endsWith("/")) serverBaseUrl else "$serverBaseUrl/"
+        val relative = if (relativePath.startsWith("/")) relativePath.substring(1) else relativePath
+        return base + relative
+    }
+
+    fun restoreData(serverUrl: String, username: String, password: String, remoteDirName: String = "RikkaHubBackup") {
+        viewModelScope.launch(Dispatchers.IO) {
+            _backupStatus.value = BackupRestoreStatus.InProgress("Starting restore...")
+            Log.d("WebDavViewModel", "Restore started. Server: $serverUrl, User: $username, RemoteDir: $remoteDirName")
+
+            try {
+                val webDavUtils = WebDavUtils(serverUrl, username, password)
+
+                // Local paths
+                val localDbPath = getDatabasePath()
+                val localDbFile = File(localDbPath) // Used for getting base name
+                val localDbWalPath = "$localDbPath-wal"
+                val localDbShmPath = "$localDbPath-shm"
+
+                // Remote file names based on local names (which are derived from DATABASE_NAME)
+                val remoteDbFileName = localDbFile.name // e.g., "rikka_hub"
+                val remoteWalFileName = "$remoteDbFileName-wal" // e.g., "rikka_hub-wal"
+                val remoteShmFileName = "$remoteDbFileName-shm" // e.g., "rikka_hub-shm"
+
+                // Remote paths for download
+                val remoteDbPath = "$remoteDirName/$remoteDbFileName"
+                val remoteWalPath = "$remoteDirName/$remoteWalFileName"
+                val remoteShmPath = "$remoteDirName/$remoteShmFileName"
+
+                val dataStoreFileName = File(application.filesDir, "datastore/$DATASTORE_FILE_NAME").name
+                val localDataStorePath = getDataStorePath()
+                val remoteDataStorePath = "$remoteDirName/$dataStoreFileName"
+
+
+                // Check if main DB backup file exists on server
+                val fullRemoteDbUrl = buildFullUrl(serverUrl, remoteDbPath)
+                val fullRemoteDsUrl = buildFullUrl(serverUrl, remoteDataStorePath)
+
+                Log.d("WebDavViewModel", "Checking server for database file: $fullRemoteDbUrl")
+                if (!webDavUtils.sardine.exists(fullRemoteDbUrl)) {
+                    _backupStatus.value = BackupRestoreStatus.Error("Database backup file not found on server at: $remoteDbPath")
+                    Log.e("WebDavViewModel", "Remote database file not found: $fullRemoteDbUrl")
+                    return@launch
+                }
+                // Not checking for DataStore existence here, as the main DB is more critical to exist.
+                // Will proceed to download DataStore if main DB exists and is downloaded.
+
+                // Close the database BEFORE replacing its file
+                _backupStatus.value = BackupRestoreStatus.InProgress("Closing local database...")
+                Log.d("WebDavViewModel", "Closing local database...")
+                if (appDatabase.isOpen) {
+                    appDatabase.close()
+                    Log.i("WebDavViewModel", "Local database closed.")
+                } else {
+                    Log.i("WebDavViewModel", "Local database was already closed.")
+                }
+
+                _backupStatus.value = BackupRestoreStatus.InProgress("Downloading database files...")
+                Log.d("WebDavViewModel", "Downloading main database from $remoteDbPath to $localDbPath")
+                if (!webDavUtils.downloadFile(remoteDbPath, localDbPath)) {
+                    _backupStatus.value = BackupRestoreStatus.Error("Failed to download main database file.")
+                    Log.e("WebDavViewModel", "Main database download failed from $remoteDbPath")
+                    return@launch
+                }
+                Log.i("WebDavViewModel", "Main database file downloaded successfully.")
+
+                // Download WAL file
+                val fullRemoteWalUrl = buildFullUrl(serverUrl, remoteWalPath)
+                Log.i("WebDavViewModel", "Attempting to download WAL file: $fullRemoteWalUrl")
+                try {
+                    if (webDavUtils.sardine.exists(fullRemoteWalUrl)) {
+                        if (webDavUtils.downloadFile(remoteWalPath, localDbWalPath)) {
+                            Log.i("WebDavViewModel", "WAL file downloaded successfully from $remoteWalPath.")
+                        } else {
+                            Log.w("WebDavViewModel", "Failed to download WAL file from $remoteWalPath, though it exists. Deleting local copy.")
+                            File(localDbWalPath).delete()
+                        }
+                    } else {
+                        Log.w("WebDavViewModel", "WAL file not found on server at $remoteWalPath, skipping. Deleting local copy.")
+                        File(localDbWalPath).delete()
+                    }
+                } catch (e: Exception) {
+                    Log.w("WebDavViewModel", "Could not download WAL file from $remoteWalPath. Error: ${e.message}. Deleting local copy.")
+                    File(localDbWalPath).delete()
+                }
+
+                // Download SHM file
+                val fullRemoteShmUrl = buildFullUrl(serverUrl, remoteShmPath)
+                Log.i("WebDavViewModel", "Attempting to download SHM file: $fullRemoteShmUrl")
+                try {
+                    if (webDavUtils.sardine.exists(fullRemoteShmUrl)) {
+                         if (webDavUtils.downloadFile(remoteShmPath, localDbShmPath)) {
+                            Log.i("WebDavViewModel", "SHM file downloaded successfully from $remoteShmPath.")
+                        } else {
+                            Log.w("WebDavViewModel", "Failed to download SHM file from $remoteShmPath, though it exists. Deleting local copy.")
+                            File(localDbShmPath).delete()
+                        }
+                    } else {
+                        Log.w("WebDavViewModel", "SHM file not found on server at $remoteShmPath, skipping. Deleting local copy.")
+                        File(localDbShmPath).delete()
+                    }
+                } catch (e: Exception) {
+                    Log.w("WebDavViewModel", "Could not download SHM file from $remoteShmPath. Error: ${e.message}. Deleting local copy.")
+                    File(localDbShmPath).delete()
+                }
+
+                // Now handle DataStore
+                Log.d("WebDavViewModel", "Checking server for settings file: $fullRemoteDsUrl")
+                if (!webDavUtils.sardine.exists(fullRemoteDsUrl)) {
+                    _backupStatus.value = BackupRestoreStatus.Error("Settings backup file not found on server at: $remoteDataStorePath")
+                    Log.e("WebDavViewModel", "Remote settings file not found: $fullRemoteDsUrl")
+                    return@launch
+                }
+                    return@launch
+                }
+                Log.i("WebDavViewModel", "Settings backup file found on server. Proceeding with download.")
+
+                _backupStatus.value = BackupRestoreStatus.InProgress("Downloading settings ($dataStoreFileName)...")
+                Log.d("WebDavViewModel", "Downloading settings from $remoteDataStorePath to $localDataStorePath")
+                if (!webDavUtils.downloadFile(remoteDataStorePath, localDataStorePath)) {
+                    _backupStatus.value = BackupRestoreStatus.Error("Failed to download settings file.")
+                    Log.e("WebDavViewModel", "Settings download failed from $remoteDataStorePath")
+                    return@launch
+                }
+                Log.i("WebDavViewModel", "Settings downloaded successfully.")
+
+                _backupStatus.value = BackupRestoreStatus.RestoredNeedRestart("Restore completed successfully! Please restart the app.")
+                Log.i("WebDavViewModel", "Restore completed. App restart needed.")
+
+            } catch (e: Exception) {
+                _backupStatus.value = BackupRestoreStatus.Error("Restore failed: ${e.message}")
+                Log.e("WebDavViewModel", "Restore error", e)
+                // If DB was closed and restore failed, it remains closed. App restart will handle re-initialization.
+            }
+        }
+    }
+}

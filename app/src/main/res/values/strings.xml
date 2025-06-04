@@ -244,4 +244,8 @@
     <string name="export_conversations_cancelled">Export cancelled</string>
     <string name="export_conversations_failed">Export failed</string>
     <string name="export_conversations_uri_null">Export cancelled or failed to get file location.</string>
+
+    <!-- WebDAV Settings -->
+    <string name="setting_page_webdav_backup_restore">WebDAV Backup &amp; Restore</string>
+    <string name="setting_page_webdav_backup_restore_desc">Backup or restore your app data using a WebDAV server.</string>
 </resources>
