@@ -38,14 +38,16 @@ class WebDavUtils(
      * @return True if successful, false otherwise.
      */
     fun uploadFile(localPath: String, remotePath: String): Boolean {
+        // Declare fullRemoteUrl outside try so it's accessible in catch for logging
+        var fullRemoteUrl = ""
         return try {
+            fullRemoteUrl = buildFullUrl(remotePath) // Assign here
             val localFile = File(localPath)
             if (!localFile.exists()) {
-                // Log error: Local file does not exist
+                Log.w(TAG, "Local file for upload does not exist: $localPath")
                 return false
             }
             val inputStream = FileInputStream(localFile)
-            val fullRemoteUrl = buildFullUrl(remotePath)
 
             // Ensure parent directories exist (optional, depends on server capabilities and library behavior)
             // MKCOL is the WebDAV method to create collections (directories)
@@ -75,8 +77,10 @@ class WebDavUtils(
      * @return True if successful, false otherwise.
      */
     fun downloadFile(remotePath: String, localPath: String): Boolean {
+        // Declare fullRemoteUrl outside try so it's accessible in catch for logging
+        var fullRemoteUrl = ""
         return try {
-            val fullRemoteUrl = buildFullUrl(remotePath)
+            fullRemoteUrl = buildFullUrl(remotePath) // Assign here
             val inputStream = sardine.get(fullRemoteUrl)
             val localFile = File(localPath)
 
@@ -103,12 +107,14 @@ class WebDavUtils(
      * @return True if the connection and authentication are successful, false otherwise.
      */
     fun testConnection(path: String = ""): Boolean {
+        // Declare pathToTest outside try so it's accessible in catch for logging
+        var pathToTest = ""
         return try {
-            val pathToTest = if (path.isEmpty()) serverUrl else buildFullUrl(path)
+            pathToTest = if (path.isEmpty()) serverUrl else buildFullUrl(path) // Assign here
             sardine.list(pathToTest) // Throws exception on failure (e.g., auth, not found)
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Error testing connection to $pathToTest", e)
+            Log.e(TAG, "Error testing connection to $pathToTest", e) // Now pathToTest is in scope
             false
         }
     }
