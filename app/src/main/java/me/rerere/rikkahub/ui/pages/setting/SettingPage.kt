@@ -151,6 +151,16 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
             }
 
             item {
+                SettingItem(
+                    navController = navController,
+                    title = { Text(stringResource(R.string.setting_page_webdav_backup_restore)) },
+                    description = { Text(stringResource(R.string.setting_page_webdav_backup_restore_desc)) },
+                    icon = { Icon(Lucide.HardDrive, "WebDAV Backup/Restore") }, // Using HardDrive, consider a cloud icon
+                    link = "setting/webdav"
+                )
+            }
+
+            item {
                 ListItem(
                     headlineContent = {
                         Text(stringResource(R.string.setting_page_dynamic_color))
