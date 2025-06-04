@@ -28,7 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import org.koin.androidx.compose.koinViewModel // Changed Hilt import to Koin
 import me.rerere.rikkahub.ui.theme.RikkaHubTheme
 import kotlin.system.exitProcess
 
@@ -36,7 +36,7 @@ import kotlin.system.exitProcess
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WebDavSettingsPage(
-    viewModel: WebDavViewModel = hiltViewModel()
+    viewModel: WebDavViewModel = koinViewModel() // Changed hiltViewModel() to koinViewModel()
 ) {
     var serverUrl by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("") }

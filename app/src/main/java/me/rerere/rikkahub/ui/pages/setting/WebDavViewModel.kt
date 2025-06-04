@@ -4,7 +4,6 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,7 +11,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.utils.WebDavUtils
 import java.io.File
-import javax.inject.Inject
 
 // Corrected database name based on grep result
 const val DATABASE_NAME = "rikka_hub"
@@ -36,10 +34,9 @@ sealed class TestConnectionStatus {
     data class Error(val message: String) : TestConnectionStatus()
 }
 
-@HiltViewModel
-class WebDavViewModel @Inject constructor(
+class WebDavViewModel(
     private val application: Application,
-    private val appDatabase: me.rerere.rikkahub.data.db.AppDatabase // Injected AppDatabase
+    private val appDatabase: me.rerere.rikkahub.data.db.AppDatabase
     // private val settingsStore: SettingsStore // Example, not used for now
 ) : ViewModel() {
 

@@ -47,7 +47,8 @@ class WebDavUtils(
                 Log.w(TAG, "Local file for upload does not exist: $localPath")
                 return false
             }
-            val inputStream = FileInputStream(localFile)
+            // Explicitly type as java.io.InputStream to guide overload resolution
+            val dataStream: java.io.InputStream = FileInputStream(localFile)
 
             // Ensure parent directories exist (optional, depends on server capabilities and library behavior)
             // MKCOL is the WebDAV method to create collections (directories)
@@ -58,7 +59,7 @@ class WebDavUtils(
             //     sardine.createDirectory(buildFullUrl(parent))
             // }
 
-            sardine.put(fullRemoteUrl, inputStream)
+            sardine.put(fullRemoteUrl, dataStream) // Use the explicitly typed stream
             true
         } catch (e: IOException) {
             Log.e(TAG, "Error uploading file. Local: $localPath, Remote URL: $fullRemoteUrl", e)
